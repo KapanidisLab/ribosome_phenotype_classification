@@ -1,0 +1,8 @@
+/data/images/
+/data/labels/
+/data/metadata.pkl
+/cacheddata.pickle
+/data/models/
+/src/ribosome_phenotype_classification.egg-info/
+/cacheddata.pickle
+/data/runs/

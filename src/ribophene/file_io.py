@@ -31,8 +31,80 @@ from skimage.registration import phase_cross_correlation
 import scipy
 from ribophene.visualise import normalize99,rescale01
 
-
 from ribophene.stats import get_stats
+
+
+def update_ribophene_paths(row, image_dir, label_dir):
+    try:
+        image_name = row["image_name"]
+        label_name = row["label_name"]
+
+        image_path = os.path.normpath(image_dir / image_name)
+        label_path = os.path.normpath(label_dir / label_name)
+
+        if os.path.exists(image_path) == False:
+            image_path = None
+        if os.path.exists(label_path) == False:
+            label_path = None
+
+        row["image_path"] = image_path
+        row["label_path"] = label_path
+
+    except:
+        print(traceback.format_exc())
+        pass
+
+    return row
+
+def read_metadata(metadata_file, data_dir):
+
+    metadata = None
+    class_labels = []
+    channel_list = []
+
+    try:
+        metadata_path = data_dir / metadata_file
+        metadata_path = os.path.normpath(metadata_path)
+
+        if os.path.exists(metadata_path):
+            metadata = pd.read_csv(metadata_path)
+            image_dir = data_dir / "images"
+            label_dir = data_dir / "labels"
+
+            if os.path.exists(image_dir) == False:
+                os.makedirs(image_dir)
+            if os.path.exists(label_dir) == False:
+                os.makedirs(label_dir)
+
+            n_image_dir = len(os.listdir(image_dir))
+            n_label_dir = len(os.listdir(label_dir))
+
+            if n_label_dir == 0 or n_image_dir == 0:
+                print(f"copying images and labels to {image_dir} and {label_dir}")
+
+            metadata["channel_list"] = metadata["channel_list"].apply(lambda data: extract_list(data, mode="channel"))
+            metadata = metadata.apply(lambda row: update_ribophene_paths(row, image_dir, label_dir), axis=1)
+
+            class_labels = list(metadata["label"].unique())
+            channel_list = list(metadata["channel_list"].iloc[0])
+
+        else:
+            print(f"metadata_path: {metadata_path} does not exist")
+            print(f"Copy metadata file to data directory: {data_dir}")
+
+    except:
+        print(traceback.format_exc())
+        pass
+
+    return metadata, class_labels, channel_list
+
+
+
+
+
+
+
+
 
 
 def align_images(images):
@@ -210,7 +282,7 @@ def import_coco_json(json_path, cell_types):
     return mask, labels
 
 
-def resize_image(image_size, h, w, cell_image_crop, colicoords = False, resize=False):
+def resize_image(image_size, h, w, cell_image_crop, resize=False, colicoords = False):
     
     cell_image_crop = np.moveaxis(cell_image_crop, 0, -1)
 
@@ -272,70 +344,54 @@ def get_crop_range(image, image_size, coords):
 
 
 
-def get_cell_images(dat, image_size, channel_list, cell_list, antibiotic_list,
-                    import_limit, colicoords, mask_background, normalise = True, resize=False, align=True):
+def get_cell_images(dat, class_labels, image_size, cell_list = ["single"],
+                    import_limit = "None", mask_background = True, normalise = True,
+                    resize=False, align=True):
+
+    cell_images = {}
 
     try:
 
-        file_names = dat["file_list"].iloc[0]
-        channels = dat["channel_list"].iloc[0]
+        image_path = dat["image_path"].iloc[0]
+        label_path = dat["label_path"].iloc[0]
+        image_name = dat["image_name"].iloc[0]
+        class_label = dat["label"].iloc[0]
+        image_channels = dat["channel_list"].iloc[0]
 
-        file_dir = os.path.dirname(dat["image_save_path"].tolist()[0])
+        label = class_labels.index(class_label)
+        dataset = dat["dataset"].iloc[0]
 
-        dat_antibiotic = dat["antibiotic"].tolist()[0]
-        dat_dataset = dat["dataset"].tolist()[0]
+        mask = tifffile.imread(label_path)
 
-        #segmentation_file = file_names[channels.index("532")]
+        image_data = tifffile.imread(image_path)
 
-        # creates RGB image from image channel(s)
+        if len(image_data.shape) == 2:
+            image_data = [image_data]
+        elif len(image_data.shape) == 3:
+            image_data = [chan for chan in image_data]
+        else:
+            return {}
 
-        image_channels = []
-        image_data = []
-
-        for i in range(len(file_names)):
-
-            file_name = file_names[i]
-            channel = channels[i]
-
-            if channel in channel_list:
-
-                img_path = os.path.abspath(os.path.join(file_dir,file_name))
-
-                json_path = pathlib.Path(img_path.replace(".tif", ".txt"))
-                index = json_path.parts.index("images")
-                parts = (*json_path.parts[:index], "json", *json_path.parts[index+1:])
-                json_path = pathlib.Path('').joinpath(*parts)
-
-                img = tifffile.imread(img_path)
-                image_data.append(img)
-                image_channels.append(channel)
-
-                mask, labels = import_coco_json(json_path, cell_list)
+        frame_shape = image_data[0].shape
 
         if align:
             image_data = align_images(image_data)
 
-        if len(image_channels) <= 3:
-            rgb = np.zeros((3, image_data[0].shape[0],image_data[0].shape[1]))
+        if len(image_data) <= 3:
+            rgb = np.zeros((3, frame_shape[0],frame_shape[1]))
         else:
-            rgb = np.zeros((len(image_channels), image_data[0].shape[0],image_data[0].shape[1]))
+            rgb = np.zeros((len(image_data), frame_shape[0],frame_shape[1]))
 
         for i in range(len(image_data)):
 
-            channel = image_channels[i]
-            channel_index = list(channel_list).index(channel)
+            rgb[i,:,:] = image_data[i]
 
-            rgb[channel_index,:,:] = image_data[i]
 
-        # crops images and gets labels
-
-        cell_dataset = []
-        cell_images = []
-        cell_labels = []
-        cell_dataset = []
-        cell_file_names = []
-        cell_mask_id = []
-        cell_statistics = []
+        cell_images = {"dataset": [],
+                       "images": [],
+                       "labels": [],
+                       "file_names": [],
+                       "mask_ids": [],}
 
         mask_ids = np.unique(mask)
 
@@ -363,12 +419,10 @@ def get_cell_images(dat, image_size, channel_list, cell_list, antibiotic_list,
 
                 cell_image_crop = rgb[:,y1:y2,x1:x2].copy()
 
-                stats = get_stats(image_channels, rgb, mask, cell_mask, cell_image_crop, cell_mask_crop, cnt)
-
                 if mask_background:
                     cell_image_crop[:,cell_mask_crop==0] = 0
 
-                cell_image_crop = resize_image(image_size, h, w, cell_image_crop, colicoords, resize)
+                cell_image_crop = resize_image(image_size, h, w, cell_image_crop, resize)
 
                 cell_image_crop = normalize99(cell_image_crop)
 
@@ -377,63 +431,59 @@ def get_cell_images(dat, image_size, channel_list, cell_list, antibiotic_list,
                     cell_image_crop = rescale01(cell_image_crop)
                     cell_image_crop = cell_image_crop.astype(np.float32)
 
-                    cell_images.append(cell_image_crop)
+                    cell_images["dataset"].append(dataset)
+                    cell_images["images"].append(cell_image_crop)
+                    cell_images["labels"].append(label)
+                    cell_images["file_names"].append(image_name)
+                    cell_images["mask_ids"].append(mask_ids[i])
 
-                    label = antibiotic_list.index(dat_antibiotic)
-
-                    cell_labels.append(label)
-
-                    cell_file_names.append(file_name)
-                    cell_dataset.append(dat_dataset)
-                    cell_mask_id.append(mask_ids[i])
-                    cell_statistics.append(stats)
     except:
-        cell_dataset, cell_images, cell_labels, cell_file_namesm, mask_ids, mask_ids = [],[],[],[],[], []
+        cell_images = {}
         print(traceback.format_exc())
 
-    return cell_dataset, cell_images, cell_labels, cell_file_names, cell_mask_id, cell_statistics
+    return cell_images
 
 
 
-def cache_data(data, image_size, antibiotic_list, channel_list, cell_list,
-               import_limit = 100, colicoords = False, mask_background = False, normalise = True, resize=False):
+def cache_data(data, class_labels, image_size, import_limit = 100,
+        mask_background = False, normalise = True, resize=False):
 
-    data = data.sort_values(by=['segmentation_file']).reset_index(drop=True)
-        
-    data = data.groupby(["segmentation_file","content","folder"])
+    cached_data = {}
+
+    data = data.groupby("image_name")
     
     data = [data.get_group(list(data.groups)[i]) for i in range(len(data))]
-    
-    print(f"loading {len(data)} images from AKGROUP into memory with image channels: {channel_list}")
 
-    with Pool(2) as pool:
-        
-        results = pool.map(partial(get_cell_images,
-                                    image_size=image_size,
-                                    channel_list = channel_list,
-                                    cell_list = cell_list,
-                                    antibiotic_list = antibiotic_list,
-                                    import_limit = import_limit,
-                                    colicoords = colicoords,
-                                    mask_background = mask_background,
-                                    resize=resize), data)
-        
-        dataset, images, labels, file_names, mask_ids, stats = zip(*results)
+    data = data[:100]
 
-        dataset = [item for sublist in dataset for item in sublist]
-        images = [item for sublist in images for item in sublist]
-        labels = [item for sublist in labels for item in sublist]
-        file_names = [item for sublist in file_names for item in sublist]
-        mask_ids = [item for sublist in mask_ids for item in sublist]
-        stats = [item for sublist in stats for item in sublist]
+    print(f"loading {len(data)} images into memory with image channels: {class_labels}")
+
+    with Pool() as pool:
+
+        cell_images = list(tqdm.tqdm(pool.imap(partial(get_cell_images,
+            class_labels = class_labels,
+            image_size=image_size,
+            import_limit = import_limit,
+            mask_background = mask_background,
+            resize=resize), data), total=len(data)))
+
+        pool.close()
+        pool.join()
+
+    cell_images = [cell for cell in cell_images if cell != {}]
+
+    dataset = [item for sublist in [cell_images[i]["dataset"] for i in range(len(cell_images))] for item in sublist]
+    images = [item for sublist in [cell_images[i]["images"] for i in range(len(cell_images))] for item in sublist]
+    labels = [item for sublist in [cell_images[i]["labels"] for i in range(len(cell_images))] for item in sublist]
+    file_names = [item for sublist in [cell_images[i]["file_names"] for i in range(len(cell_images))] for item in sublist]
+    mask_ids = [item for sublist in [cell_images[i]["mask_ids"] for i in range(len(cell_images))] for item in sublist]
 
     cached_data = dict(dataset=dataset,
                         images=images,
                         labels=labels,
                         file_names=file_names,
-                        antibiotic_list = antibiotic_list,
-                        mask_ids = mask_ids,
-                        stats = stats)
+                        class_labels = class_labels,
+                        mask_ids = mask_ids,)
      
     return cached_data
 
@@ -468,9 +518,10 @@ def limit_train_data(train_data, num_files):
 
 
 
-def get_training_data(cached_data, shuffle=True, ratio_train = 0.8, val_test_split=0.5, label_limit = "None", balance = False):
+def get_training_data(cached_data, shuffle=True, ratio_train = 0.8,
+        val_test_split=0.5, label_limit = "None", balance = False):
 
-    label_names = cached_data.pop("antibiotic_list")
+    label_names = cached_data.pop("class_labels")
 
     train_data = {}
     val_data = {}
@@ -485,7 +536,7 @@ def get_training_data(cached_data, shuffle=True, ratio_train = 0.8, val_test_spl
     overlap = list(set(train_indices) & set(test_indices))
 
     data_sort = pd.DataFrame(cached_data).drop(labels = ["images"], axis=1)
-    data_sort = data_sort.groupby(["labels"])
+    data_sort = data_sort.groupby("labels")
     
     for i in range(len(data_sort)):
     
@@ -556,9 +607,9 @@ def get_training_data(cached_data, shuffle=True, ratio_train = 0.8, val_test_spl
         val_data = balance_dataset(val_data)
         test_data = balance_dataset(test_data)
 
-    train_data["antibiotic_list"] = label_names
-    val_data["antibiotic_list"] = label_names
-    test_data["antibiotic_list"] = label_names
+    train_data["class_labels"] = label_names
+    val_data["class_labels"] = label_names
+    test_data["class_labels"] = label_names
 
     return train_data, val_data, test_data  
 

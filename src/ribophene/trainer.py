@@ -37,11 +37,12 @@ class Trainer:
 
     def __init__(self,
                  model: torch.nn.Module = None,
+                 task_name: str = None,
                  num_classes: int = None,
                  augmentation: bool = False,
                  pretrained_model=None,
                  device: torch.device = None,
-                 antibiotic_list = [],
+                 class_labels = [],
                  channel_list = [],
                  train_data = None,
                  val_data = None,
@@ -49,8 +50,6 @@ class Trainer:
                  batch_size: int = None,
                  tensorboard=bool,
                  epochs: int = 100,
-                 kfolds: int = 0,
-                 fold: int = 0,
                  model_folder_name = '',
                  model_path = None,
                  save_dir = '',
@@ -59,6 +58,7 @@ class Trainer:
                  ):
 
         self.model = model
+        self.task_name = task_name
         self.learning_rate = learning_rate
         self.num_classes = num_classes
         self.augmentation = augmentation
@@ -74,8 +74,7 @@ class Trainer:
         self.model_path = model_path
         self.epoch = 0
         self.tensorboard = tensorboard
-        self.antibiotic_list = antibiotic_list
-        self.antibiotic = antibiotic_list[-1]
+        self.class_labels = class_labels
         self.channel_list = channel_list
         self.num_train_images = len(train_data)
         self.num_validation_images = len(val_data)
@@ -83,8 +82,6 @@ class Trainer:
         self.training_accuracy = []
         self.validation_loss = []
         self.validation_accuracy = []
-        self.kfolds = kfolds
-        self.fold = fold
         self.timestamp = timestamp
         self.hyperparameters_tuned = False
         self.hyperparameter_study = None
@@ -103,28 +100,21 @@ class Trainer:
 
     def initialise_model_paths(self):
 
-        condition = [self.antibiotic] + self.channel_list
-        condition = '[' + '-'.join(condition) + ']'
+        condition = self.task_name
 
         if os.path.exists(self.save_dir):
-            if self.kfolds > 0:
-                parts = (self.save_dir, "models", self.model_folder_name + "_" + self.timestamp, condition, "fold" + str(self.fold))
-            else:
-                parts = (self.save_dir, "models", self.model_folder_name + "_" + self.timestamp, condition)
-            self.model_dir = pathlib.Path('').joinpath(*parts)
+            mode_dir_parts = (self.save_dir, "models", self.model_folder_name, condition + "_" + self.timestamp)
+            runs_dir_parts = (self.save_dir, "runs", self.model_folder_name, condition + "_" + self.timestamp)
+            self.model_dir = pathlib.Path('').joinpath(*mode_dir_parts)
+            log_dir = pathlib.Path('').joinpath(*runs_dir_parts)
         else:
-            if self.kfolds > 0:
-                parts = ("models", self.model_folder_name + "_" + self.timestamp, condition, "fold" + str(self.fold))
-            else:
-                parts = ("models", self.model_folder_name + "_" + self.timestamp, condition)
-            self.model_dir = pathlib.Path('').joinpath(*parts)
+            mode_dir_parts = ("models", self.model_folder_name, condition + "_" + self.timestamp,)
+            runs_dir_parts = ("runs", self.model_folder_name, condition + "_" + self.timestamp,)
+            self.model_dir = pathlib.Path('').joinpath(*mode_dir_parts)
+            log_dir = pathlib.Path('').joinpath(*runs_dir_parts)
 
-        if self.kfolds > 0:
-            self.model_dir = str(self.model_dir)
-            self.model_path = str(pathlib.Path('').joinpath(*self.model_dir.parts, "AMRClassification_" + condition + "_" + "fold" + str(self.fold) + "_" + self.timestamp))
-        else:
-            self.model_dir = pathlib.Path(self.model_dir)
-            self.model_path = str(pathlib.Path('').joinpath(*self.model_dir.parts[:-1], "AMRClassification_" + condition + "_" + self.timestamp))
+        self.model_dir = pathlib.Path(self.model_dir)
+        self.model_path = str(pathlib.Path('').joinpath(*self.model_dir.parts, "phenotype_classification_" + condition + "_" + self.timestamp))
 
         if not os.path.exists(self.model_dir):
             os.makedirs(self.model_dir)
@@ -135,60 +125,10 @@ class Trainer:
                 self.model.load_state_dict(model_weights)
 
         if self.tensorboard:
-            self.writer = SummaryWriter(log_dir="runs/" + condition + "_" + self.timestamp)
-
-
-    def plot_descriptive_dataset_stats(self, show_plots=True, save_plots=False):
-
-        train_data = self.train_data
-        val_data = self.val_data
-        test_data = self.test_data
-        antibiotic_list = self.antibiotic_list
-        model_dir = pathlib.Path(self.model_dir)
-
-        for stat_name in train_data["stats"][0].keys():
-            plot_data = []
-
-            for dataset_name in ["train_data", "val_data", "test_data"]:
-                if dataset_name == "train_data":
-                    dataset = train_data
-                    dataset_size = len(dataset["labels"])
-                    dataset_plot_name = f"Training, N:{dataset_size}"
-                elif dataset_name == "val_data":
-                    dataset = val_data
-                    dataset_size = len(dataset["labels"])
-                    dataset_plot_name = f"Validation, N:{dataset_size}"
-                elif dataset_name == "test_data":
-                    dataset = test_data
-                    dataset_size = len(dataset["labels"])
-                    dataset_plot_name = f"Testing, N:{dataset_size}"
-
-                for label in np.unique(dataset["labels"]):
-                    label_indices = np.where(dataset["labels"] == label)[0]
-
-                    for index in label_indices:
-                        label = antibiotic_list[dataset["labels"][index]]
-                        stat = dataset["stats"][index]
-
-                        if stat != None:
-                            plot_data.append({"Dataset": dataset_plot_name, "label": label, "stat": stat[stat_name]})
-
-            plot_data = pd.DataFrame(plot_data)
-
-            sns.boxplot(x='Dataset', y='stat', data=plot_data, hue='label')
-            plt.legend(loc='upper right')
-            plt.ylabel(stat_name, fontsize=12)
-            plt.xlabel("Dataset", fontsize=12)
-            plt.title(f"Descriptive Statistics Distributions\n{stat_name}")
-            plt.tight_layout()
-            if save_plots:
-                plot_save_path = pathlib.Path('').joinpath(*model_dir.parts, "descriptive_dataset_statistics", f"{stat_name}_distribution.tif")
-                if not os.path.exists(os.path.dirname(plot_save_path)):
-                    os.makedirs(os.path.dirname(plot_save_path))
-                plt.savefig(plot_save_path, bbox_inches='tight', dpi=300)
-            if show_plots:
-                plt.show()
-            plt.close()
+            log_dir = str(pathlib.Path(log_dir))
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+            self.writer = SummaryWriter(log_dir=log_dir)
 
     def correct_predictions(self, label, pred_label):
 
@@ -405,14 +345,12 @@ class Trainer:
                             'validation_loss': self.validation_loss,
                             'training_accuracy': self.training_accuracy,
                             'validation_accuracy': self.validation_accuracy,
-                            'antibiotic': self.antibiotic,
                             'channel_list': self.channel_list,
                             'num_train_images': self.num_train_images,
                             'num_validation_images': self.num_validation_images,
-                            'KFOLDS':self.kfolds,
                             'hyperparameters_tuned':self.hyperparameters_tuned,
                             'hyperparameter_study':self.hyperparameter_study,
-                            'antibiotic_list':self.antibiotic_list}, self.model_path,)
+                            'class_labels':self.class_labels}, self.model_path, )
                 
                 # model_state_dict = torch.load(self.model_path)['model_state_dict']
                 # self.model.load_state_dict(model_state_dict)
@@ -579,7 +517,7 @@ class Trainer:
                                                  saliency_maps,
                                                  true_labels,pred_labels,
                                                  pred_confidences,
-                                                 self.antibiotic_list)
+                                                 self.class_labels)
 
         cm = confusion_matrix(true_labels, pred_labels, normalize='pred')
 
@@ -592,7 +530,7 @@ class Trainer:
         model_data["test_predictions"] = test_predictions
         model_data["test_balanced_accuracy"] = balanced_accuracy_score(true_labels, pred_labels)
         model_data["test_stats"] = pred_stats
-        model_data["antibiotic_list"] = self.antibiotic_list
+        model_data["class_labels"] = self.class_labels
 
         torch.save(model_data, self.model_path)
 
