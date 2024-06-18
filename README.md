@@ -2,7 +2,7 @@
 
 This github repo provides the code necessary to generate image datasets and classify _E. coli_ by ribosome phenotype. For image segmentation and bacterial segmentation statistics, see https://github.com/piedrro/napari-bacseg.
 
-Data is available on Zenodo: ###
+Data is available on Zenodo: https://zenodo.org/records/11656505
 
 After cloning the repo, the project can be installed with the pyproject.toml file.
 
